@@ -45,8 +45,8 @@ sudo apt install python3-tk
 [observer]
 latitude  = 42.936    ; degrés décimaux, positif = Nord
 longitude = 0.143     ; degrés décimaux, positif = Est
-elevation = 200        ; altitude en mètres
-name      = PBO        ; nom libre (optionnel)
+elevation = 2880      ; altitude en mètres
+name      = Pic du Midi   ; nom libre (optionnel)
 ```
 
 ## Utilisation
