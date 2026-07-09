@@ -8,6 +8,10 @@ la hauteur au-dessus de l'horizon au moment de l'observation. Il privilégie les
 étoiles présentes dans les bibliothèques spectrales de référence **MILES** et
 **MELCHIORS**, utiles pour la calibration de la réponse instrumentale.
 
+Ce projet s'inspire largement de
+[SpectroStars](https://github.com/serge-golovanow/SpectroStars) par
+Serge Golovanow.
+
 ## Contenu du dépôt
 
 | Fichier | Rôle |
@@ -68,8 +72,7 @@ Fonctionnalités de l'interface :
 - **Tableau de résultats** triable par colonne ; les étoiles MILES et MELCHIORS
   sont mises en évidence.
 - **Avertissement de rougissement** : un symbole ⚠ signale les étoiles dont
-  E(B–V) dépasse 0,3 (rougissement interstellaire notable, à corriger avant
-  d'utiliser l'étoile comme standard de réponse instrumentale).
+  E(B–V) dépasse 0,3 (rougissement interstellaire notable).
 - **Clic droit** sur une ligne : copier le nom de l'étoile, ou ouvrir sa fiche
   SIMBAD dans le navigateur.
 
@@ -92,17 +95,16 @@ python star_finder.py --target "Deneb" --radius 8 --datetime now --min-alt 20
 python star_finder.py --target "M27"   --radius 10 --datetime now --max-dalt 5
 ```
 
-## À propos de la colonne E(B–V)
-
-`Ebv` est l'**excès de couleur** dû au rougissement interstellaire :
-E(B–V) = (B–V)_observé − (B–V)_intrinsèque. Plus la valeur est élevée, plus le
-continuum de l'étoile est incliné vers le rouge par la poussière sur la ligne de
-visée. Pour une calibration de réponse instrumentale soignée, on privilégie des
-étoiles peu rougies, ou on applique une loi d'extinction avant usage. Le symbole
-⚠ dans l'interface signale les valeurs > 0,3.
+## Colonne E(B–V)
 
 Note : la colonne `Ebv` n'est pas renseignée pour toutes les étoiles MELCHIORS.
+Un symbole ⚠ dans l'interface signale les valeurs > 0,3.
+
+## Crédits
+
+Ce projet reprend et adapte largement le travail de Serge Golovanow,
+[SpectroStars](https://github.com/serge-golovanow/SpectroStars).
 
 ## Licence
 
-À définir.
+Ce projet est distribué sous licence **MIT** (voir le fichier `LICENSE`).
