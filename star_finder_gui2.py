@@ -9,6 +9,8 @@ import sys
 import threading
 import traceback
 import warnings
+import webbrowser
+import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -61,17 +63,17 @@ def resolve_by_sexagesimal(ra_str: str, dec_str: str) -> SkyCoord:
 
 COLUMNS = [
     ("Nom",      "Name",      150, "center"),
-    ("Sep (deg)",  "Sep_deg",    70, "e"),
-    ("DeltaAlt (deg)", "DAlt_deg",   110, "e"),
+    ("Sep (°)",  "Sep_deg",    70, "e"),
+    ("ΔAlt (°)", "DAlt_deg",   110, "e"),
     ("Vmag",     "Vmag",       55, "e"),
     ("SpType",   "SpType",     85, "w"),
     ("Cat",    "Miles",      50, "center"),
     ("RA",       "RA",        110, "w"),
     ("Dec",      "Dec",        95, "w"),
     ("B-V",      "B-V",        55, "e"),
-    ("Ebv",      "Ebv",        55, "e"),
-    ("Alt (deg)",  "Alt_deg",    70, "e"),
-    ("Az (deg)",   "Az_deg",     70, "e"),
+    ("Ebv",      "Ebv",        75, "e"),
+    ("Alt (°)",  "Alt_deg",    70, "e"),
+    ("Az (°)",   "Az_deg",     70, "e"),
 ]
 
 PAD = {"padx": 6, "pady": 4}
@@ -91,6 +93,7 @@ ACCENT  = "#89b4fa"
 GREEN   = "#a6e3a1"
 ENTRY_BG= "#313145"
 SEL_BG  = "#45475a"
+SEL_RED = "#e64553"   # surbrillance rouge pour la ligne sélectionnée
 
 FONT_UI   = ("DejaVu Sans", 10)
 FONT_BOLD = ("DejaVu Sans", 10, "bold")
@@ -148,8 +151,8 @@ def apply_dark_theme(root: tk.Tk):
         font=FONT_BOLD, relief="flat", borderwidth=0,
     )
     style.map("Treeview",
-        background=[("selected", SEL_BG)],
-        foreground=[("selected", FG)],
+        background=[("selected", SEL_RED)],
+        foreground=[("selected", "#ffffff")],
     )
     style.map("Treeview.Heading",
         background=[("active", BG3)],
@@ -168,6 +171,7 @@ class StarFinderApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("SpectroStars - Star Finder")
+        # (v2 : date/heure préremplies, B+A cochés, menu contextuel SIMBAD)
         self.resizable(True, True)
         self.minsize(950, 640)
         self.configure(bg=BG)
@@ -254,7 +258,7 @@ class StarFinderApp(tk.Tk):
 
         # Ligne Date
         ttk.Label(frm_time, text="Date").grid(row=0, column=0, sticky="w")
-        self._date_var  = tk.StringVar()
+        self._date_var  = tk.StringVar(value=datetime.now().strftime("%Y-%m-%d"))
         self._date_entry = ttk.Entry(frm_time, textvariable=self._date_var, width=12)
         self._date_entry.grid(row=0, column=1, sticky="ew", padx=(4, 0))
         ttk.Label(frm_time, text="YYYY-MM-DD",
@@ -262,7 +266,7 @@ class StarFinderApp(tk.Tk):
 
         # Ligne Heure
         ttk.Label(frm_time, text="Heure").grid(row=2, column=0, sticky="w", pady=(6,0))
-        self._time_var  = tk.StringVar()
+        self._time_var  = tk.StringVar(value="21:00")
         self._time_entry = ttk.Entry(frm_time, textvariable=self._time_var, width=7)
         self._time_entry.grid(row=2, column=1, sticky="w", padx=(4, 0), pady=(6,0))
         ttk.Label(frm_time, text="HH:MM",
@@ -295,10 +299,10 @@ class StarFinderApp(tk.Tk):
         self._minalt_var = tk.StringVar()
         self._maxres_var = tk.StringVar()
 
-        filter_row(frm_filters, 0, "Rayon max (deg)",  self._radius_var, "10")
-        filter_row(frm_filters, 1, "|DAlt| max (deg)", self._dalt_var,   "5",
+        filter_row(frm_filters, 0, "Rayon max (°)",  self._radius_var, "10")
+        filter_row(frm_filters, 1, "|ΔAlt| max (°)", self._dalt_var,   "5",
                    "vide = inactif")
-        filter_row(frm_filters, 2, "Alt min (deg)",    self._minalt_var, "",
+        filter_row(frm_filters, 2, "Alt min (°)",    self._minalt_var, "",
                    "vide = inactif")
         filter_row(frm_filters, 3, "Nb max resultats", self._maxres_var, "",
                    "vide = tous")
@@ -309,7 +313,7 @@ class StarFinderApp(tk.Tk):
         sp_frame = ttk.Frame(frm_filters)
         sp_frame.grid(row=4, column=1, columnspan=2, sticky="w", pady=(6,2))
         for col_i, letter in enumerate(["O", "B", "A", "F", "G", "K", "M"]):
-            var = tk.BooleanVar(value=False)
+            var = tk.BooleanVar(value=(letter in ("B", "A")))
             self._sptype_vars[letter] = var
             cb = tk.Checkbutton(sp_frame, text=letter, variable=var,
                                 bg=BG3, fg=FG, selectcolor=BG2,
@@ -359,6 +363,19 @@ class StarFinderApp(tk.Tk):
         self._tree.tag_configure("even",  background=BG3)
         self._tree.tag_configure("miles",    foreground=GREEN)
         self._tree.tag_configure("melchiors", foreground="#fab387")
+
+        # Menu contextuel (clic droit)
+        self._ctx_menu = tk.Menu(self, tearoff=0, bg=BG2, fg=FG,
+                                 activebackground=SEL_BG, activeforeground=ACCENT,
+                                 relief="flat", bd=0)
+        self._ctx_menu.add_command(label="Copier le nom de l'étoile",
+                                   command=self._ctx_copy_name)
+        self._ctx_menu.add_command(label="Ouvrir la page SIMBAD",
+                                   command=self._ctx_open_simbad)
+        self._ctx_row_name = None
+        # Button-3 = clic droit (Button-2 sur macOS)
+        self._tree.bind("<Button-3>", self._show_context_menu)
+        self._tree.bind("<Button-2>", self._show_context_menu)
 
         # Barre de statut
         self._status_var = tk.StringVar(value="Pret.")
@@ -475,7 +492,7 @@ class StarFinderApp(tk.Tk):
 
         if (max_dalt is not None or min_alt is not None) and not dt_str:
             messagebox.showwarning("Date manquante",
-                "Les filtres DAlt et Alt min necessitent\n"
+                "Les filtres ΔAlt et Alt min necessitent\n"
                 "une date/heure d'observation.")
             return
 
@@ -548,7 +565,7 @@ class StarFinderApp(tk.Tk):
         if obstime is not None and location is not None:
             talt, taz = compute_target_altaz(target, obstime, location)
             target_info = (f"Cible : {ra_s}  {dec_s}  |  "
-                           f"Alt={talt:.1f} deg  Az={taz:.1f} deg")
+                           f"Alt={talt:.1f}°  Az={taz:.1f}°")
         else:
             target_info = f"Cible : {ra_s}  {dec_s}"
 
@@ -595,7 +612,11 @@ class StarFinderApp(tk.Tk):
             vmag   = f"{row['Vmag']:.2f}"     if pd.notna(row.get("Vmag"))   else ""
             sptype = str(row.get("SpType","")) if pd.notna(row.get("SpType")) else ""
             bv     = f"{row['B-V']:.3f}"       if pd.notna(row.get("B-V"))    else ""
-            ebv    = f"{row['Ebv']:.3f}"        if pd.notna(row.get("Ebv"))    else ""
+            if pd.notna(row.get("Ebv")):
+                ebv_val = row["Ebv"]
+                ebv = f"⚠ {ebv_val:.3f}" if ebv_val > 0.3 else f"{ebv_val:.3f}"
+            else:
+                ebv = ""
 
             raw_miles = row.get("Miles", "")
             is_miles  = (pd.notna(raw_miles)
@@ -680,6 +701,41 @@ class StarFinderApp(tk.Tk):
         parts = self._status_var.get().split("  ", 1)
         ti = parts[1] if len(parts) > 1 else ""
         self._display_results(df, ti)
+
+    # ------------------------------------------------------------------
+    # Menu contextuel (clic droit sur une ligne)
+    # ------------------------------------------------------------------
+
+    def _show_context_menu(self, event):
+        # Identifier la ligne sous le curseur
+        row_id = self._tree.identify_row(event.y)
+        if not row_id:
+            return
+        self._tree.selection_set(row_id)
+        values = self._tree.item(row_id, "values")
+        if not values:
+            return
+        # La colonne "Nom" est la premiere du tableau
+        self._ctx_row_name = str(values[0]).strip()
+        try:
+            self._ctx_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self._ctx_menu.grab_release()
+
+    def _ctx_copy_name(self):
+        if not self._ctx_row_name:
+            return
+        self.clipboard_clear()
+        self.clipboard_append(self._ctx_row_name)
+        self._status(f"Nom copié : {self._ctx_row_name}")
+
+    def _ctx_open_simbad(self):
+        if not self._ctx_row_name:
+            return
+        ident = urllib.parse.quote(self._ctx_row_name)
+        url = (f"https://simbad.u-strasbg.fr/simbad/sim-basic?Ident={ident}")
+        webbrowser.open(url)
+        self._status(f"Ouverture SIMBAD : {self._ctx_row_name}")
 
     # ------------------------------------------------------------------
     # Export CSV
