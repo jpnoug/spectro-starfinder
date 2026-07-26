@@ -337,6 +337,80 @@ def find_nearby(catalog: pd.DataFrame,
     return result
 
 
+def find_by_target_height(catalog: pd.DataFrame,
+                          target: SkyCoord,
+                          obstime: Time,
+                          location: EarthLocation,
+                          h_target_deg: float,
+                          radius_deg: float | None = None,
+                          max_dh_deg: float | None = None,
+                          min_alt_deg: float | None = None,
+                          sp_types: list | None = None,
+                          max_results: int | None = None) -> pd.DataFrame:
+    """
+    Recherche d'étoiles de référence dont l'altitude à `obstime` est la plus
+    proche de `h_target_deg` — donc à masse d'air voisine de celle à laquelle
+    la cible a été observée.
+
+    Le tri se fait par |Alt_étoile - h_target| croissant. `radius_deg`, s'il
+    est fourni, borne aussi la séparation angulaire à la cible (utile pour
+    rester dans une zone de ciel comparable en transparence / extinction).
+    """
+    result = catalog.copy()
+
+    # Séparation angulaire à la cible (toujours calculée, filtrée si demandé)
+    cat_coords = SkyCoord(
+        ra=result["RA"].values * u.deg,
+        dec=result["Dec"].values * u.deg,
+        frame="icrs",
+    )
+    result["Sep_deg"] = target.separation(cat_coords).deg
+    if radius_deg is not None:
+        result = result[result["Sep_deg"] <= radius_deg].copy()
+
+    # Filtre type spectral
+    if sp_types and "SpType" in result.columns:
+        prefixes = tuple(s.upper() for s in sp_types)
+        mask = result["SpType"].apply(
+            lambda x: isinstance(x, str) and x.strip().upper()[:1] in prefixes
+        )
+        result = result[mask].copy()
+
+    if result.empty:
+        result["Alt_deg"] = []
+        result["Az_deg"] = []
+        result["DHvise_deg"] = []
+        return result
+
+    # Altitude / azimut de chaque candidate à l'instant considéré
+    alts, azs = compute_altaz(result, obstime, location)
+    result["Alt_deg"] = alts
+    result["Az_deg"] = azs
+
+    # Altitude de la cible (pour info / colonne DAlt)
+    target_alt, _ = compute_target_altaz(target, obstime, location)
+    result["DAlt_deg"] = [a - target_alt for a in alts]
+
+    # Écart à la hauteur visée : critère de tri
+    result["DHvise_deg"] = [a - h_target_deg for a in alts]
+
+    # Filtres
+    if min_alt_deg is not None:
+        result = result[result["Alt_deg"] >= min_alt_deg].copy()
+    if max_dh_deg is not None:
+        result = result[result["DHvise_deg"].abs() <= max_dh_deg].copy()
+
+    # Tri par proximité de hauteur (donc de masse d'air)
+    result = result.reindex(
+        result["DHvise_deg"].abs().sort_values(kind="mergesort").index
+    ).reset_index(drop=True)
+
+    if max_results is not None:
+        result = result.head(max_results)
+
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Affichage des résultats
 # ---------------------------------------------------------------------------
