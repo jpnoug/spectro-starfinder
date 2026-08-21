@@ -24,7 +24,7 @@ Serge Golovanow.
 | `star_finder.py` | Moteur de calcul (résolution SIMBAD, séparation angulaire, alt/az, filtres). Utilisable en ligne de commande. |
 | `star_finder_gui.py` | Interface graphique (Tkinter, thème sombre) avec graphes de trajectoire. |
 | `fits_target.py` | Lecture des entêtes FITS d'acquisition, trajectoire altitude/masse d'air de la cible. |
-| `base.csv` | Catalogue d'étoiles (colonnes `Name, RA, Dec, Vmag, SpType, B-V, Ebv, Miles, Sp_s, Melchiors`). |
+| `base.csv` | Catalogue d'étoiles (colonnes `Name, NomCommun, RA, Dec, Vmag, SpType, B-V, Ebv, Miles, Sp_s, Melchiors`). La colonne `NomCommun` donne le nom usuel de l'étoile (nom propre, ex. *Vega*, *Merak* ; sinon désignation de Bayer/Flamsteed, ex. *31 Vir*) quand il existe. |
 | `observer.ini` | Position de l'observateur (latitude, longitude, altitude). À adapter à votre lieu. |
 
 ## Installation
@@ -82,7 +82,7 @@ Trois modes, sélectionnables dans le panneau *Cible* :
 
 #### Cible depuis les FITS
 
-*Fichier ▾ → Charger des FITS de la cible…* (ou le bouton **Choisir des FITS…**)
+*Fichiers ▾ → Charger des FITS de la cible…* (ou le bouton **Choisir des FITS…**)
 lit les entêtes d'un lot de poses et en déduit la trajectoire réelle de la cible.
 
 Mots-clés exploités : `DATE-OBS`, `EXPTIME`, `OBJCTRA` / `OBJCTDEC` (ou `RA` /
@@ -143,7 +143,9 @@ chargement FITS a eu lieu :
   est dessinée comme un rectangle dont la largeur est le temps d'exposition et
   la hauteur la plage d'altitude balayée pendant la pose ; la hauteur moyenne
   apparaît en pointillés. En mode nom/RA-Dec, un point marque l'instant choisi.
-  La ligne rouge pointillée est la hauteur visée, déplaçable.
+  Le titre du panneau reprend le nom de la cible (mode nom/FITS) ou ses
+  coordonnées RA/Dec (mode RA/Dec). La ligne rouge pointillée est la hauteur
+  visée, déplaçable.
 - **Droite — l'étoile de référence** sélectionnée dans le tableau (un simple
   clic sur une ligne). L'arc est centré sur l'instant de référence (fin de la
   dernière pose en mode FITS, heure choisie sinon), avec des repères à
@@ -164,19 +166,26 @@ l'en-tête.
   `Melch`, ou `M+Mel`. Les étoiles MILES sont affichées en vert, MELCHIORS en
   orange.
 - Un symbole **⚠** signale les valeurs de E(B–V) supérieures à 0,3.
+- Au survol d'une ligne, une **info-bulle** affiche le nom commun de l'étoile
+  (`NomCommun` du catalogue) lorsqu'il est renseigné — pratique pour identifier
+  la référence d'un coup d'œil sans élargir le tableau.
 
 #### Menu contextuel (clic droit sur une ligne)
 
-- **Copier le nom de l'étoile**
+- **Copier le nom HD** — copie l'identifiant de l'étoile (colonne `Nom`) dans
+  le presse-papier.
+- **Copier le nom commun** — copie le nom usuel (`NomCommun`) ; l'entrée
+  n'apparaît que si l'étoile en a un. Le nom commun est aussi rappelé en tête
+  du menu.
 - **Ouvrir la page SIMBAD**
 - **Type spectral (Skiff) dans VizieR** — interroge directement le catalogue
   `B/mk/mktypes` (*Catalogue of Stellar Spectral Classifications*, Skiff) dans
   un rayon de 5″ autour de l'étoile, pour vérifier ou affiner un type spectral
   douteux.
 
-#### Menu Fichier
+#### Menu Fichiers
 
-Le bandeau de menu a été remplacé par un bouton **Fichier ▾** (plus de place
+Le bandeau de menu a été remplacé par un bouton **Fichiers ▾** (plus de place
 pour les graphes) :
 
 - choisir le catalogue (`base.csv`) ;
@@ -209,6 +218,23 @@ python star_finder.py --target "Vega"  --radius 10 --datetime now --sp-type B A
 
 Options principales : `--target` / `--ra` + `--dec`, `--radius`, `--max`,
 `--catalog`, `--config`, `--datetime`, `--min-alt`, `--max-dalt`, `--sp-type`.
+
+## À propos de la colonne Nom commun
+
+`NomCommun` donne le nom usuel de l'étoile, pour la rendre immédiatement
+identifiable à l'oculaire. La priorité est :
+
+1. **nom propre** (Vega, Merak, Sirius…) quand il existe ;
+2. sinon **désignation de Bayer** grecque (bet UMa…) ;
+3. sinon **désignation de Flamsteed** (31 Vir…).
+
+Ces noms sont résolus via **SIMBAD** (identifiant `NAME`, puis désignation de
+Bayer/Flamsteed), et les désignations de Bayer en lettres latines peu
+parlantes (ex. `d01 Vir`) sont ensuite remplacées par la désignation de
+Flamsteed correspondante à l'aide de la base **HYG** (Hipparcos-Yale-Gliese),
+plus lisible (ex. `31 Vir`). La colonne reste vide pour les étoiles sans aucune
+désignation usuelle, ce qui est fréquent pour les étoiles peu remarquables du
+catalogue.
 
 ## À propos de la colonne E(B–V)
 

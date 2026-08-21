@@ -116,6 +116,65 @@ FONT_MONO = ("DejaVu Sans Mono", 10)
 FONT_SM   = ("DejaVu Sans", 9)
 
 
+class TreeTooltip:
+    """Info-bulle affichee au survol d'une ligne du Treeview.
+
+    Le texte de chaque ligne est fourni par une fonction de rappel
+    text_for(row_id) qui renvoie la chaine a afficher, ou "" pour ne rien
+    montrer. La fenetre est recreee a chaque changement de ligne pour eviter
+    tout residu graphique sous X11.
+    """
+
+    def __init__(self, tree, text_for, delay_ms=500):
+        self._tree = tree
+        self._text_for = text_for
+        self._delay = delay_ms
+        self._tip = None
+        self._row = None
+        self._after = None
+        tree.bind("<Motion>", self._on_motion, add="+")
+        tree.bind("<Leave>", self._on_leave, add="+")
+
+    def _on_motion(self, event):
+        row_id = self._tree.identify_row(event.y)
+        if row_id != self._row:
+            self._row = row_id
+            self._hide()
+            if row_id and self._text_for(row_id):
+                self._after = self._tree.after(
+                    self._delay, lambda e=event: self._show(e))
+
+    def _on_leave(self, _event):
+        self._hide()
+        self._row = None
+
+    def _show(self, event):
+        if self._tip is not None or not self._row:
+            return
+        text = self._text_for(self._row)
+        if not text:
+            return
+        x = self._tree.winfo_pointerx() + 14
+        y = self._tree.winfo_pointery() + 18
+        self._tip = tk.Toplevel(self._tree)
+        self._tip.wm_overrideredirect(True)
+        self._tip.wm_geometry(f"+{x}+{y}")
+        tk.Label(self._tip, text=text, justify="left",
+                 bg=BG2, fg=FG, font=FONT_SM,
+                 relief="solid", bd=1, padx=6, pady=3).pack()
+
+    def _hide(self):
+        if self._after is not None:
+            try:
+                self._tree.after_cancel(self._after)
+            except Exception:
+                pass
+            self._after = None
+        if self._tip is not None:
+            self._tip.destroy()
+            self._tip = None
+
+
 def apply_dark_theme(root: tk.Tk):
     style = ttk.Style(root)
     style.theme_use("clam")
@@ -187,9 +246,12 @@ class StarFinderApp(tk.Tk):
         super().__init__()
         self.title("Spectro reference star finder")
         self.resizable(True, True)
-        self.minsize(950, 640)
-        self.geometry("1200x860")
         self.configure(bg=BG)
+        # La taille minimale et la geometrie initiale sont fixees APRES la
+        # construction de l'UI (voir _finalize_window_size), pour s'adapter a
+        # la largeur reellement occupee par la barre superieure, qui varie
+        # selon le rendu de police (Windows / Linux, DPI). Cela evite que le
+        # bouton « Rechercher » soit coupe hors du cadre.
 
         self._catalog      = None
         self._catalog_path = tk.StringVar(value="base.csv")
@@ -216,6 +278,7 @@ class StarFinderApp(tk.Tk):
 
         apply_dark_theme(self)
         self._build_ui()
+        self._finalize_window_size()
         self._try_autoload()
 
     # ------------------------------------------------------------------
@@ -255,6 +318,15 @@ class StarFinderApp(tk.Tk):
         # Panneau superieur
         top = ttk.Frame(self, padding=8)
         top.pack(side=tk.TOP, fill=tk.X)
+        self._top_frame = top
+
+        # Panneau Action (Rechercher, Fichier) ancre a DROITE et cree en
+        # PREMIER : en Tk, un panneau side=RIGHT reserve son espace avant les
+        # panneaux side=LEFT, donc « Rechercher » reste toujours visible au
+        # bord droit meme si la fenetre est etroite ou si le rendu de police
+        # (Windows/Linux, DPI) elargit les panneaux du milieu.
+        frm_action = ttk.Frame(top, padding=8)
+        frm_action.pack(side=tk.RIGHT, fill=tk.Y, **PAD)
 
         # Cible
         frm_target = ttk.LabelFrame(top, text="Cible", padding=8)
@@ -322,7 +394,7 @@ class StarFinderApp(tk.Tk):
                   style="Dim.TLabel").grid(row=2, column=1, columnspan=2,
                                             sticky="w")
         ttk.Label(frm_fits,
-                  text="h visée : ligne rouge déplaçable sur le graphe",
+                  text="h visée : ligne rouge déplaçable",
                   style="Dim.TLabel", wraplength=240, justify="left").grid(
             row=3, column=0, columnspan=3, sticky="w", pady=(4, 0))
 
@@ -401,33 +473,55 @@ class StarFinderApp(tk.Tk):
             self._sptype_btns[letter] = cb
             self._update_sptype_color(letter)   # état initial
 
-        # Bouton Rechercher
-        frm_action = ttk.Frame(top, padding=8)
-        frm_action.pack(side=tk.LEFT, fill=tk.Y, **PAD)
-
+        # Contenu du panneau Action (frm_action a ete cree et ancre a droite
+        # plus haut, avant les panneaux de gauche).
         self._search_btn = ttk.Button(frm_action, text="Rechercher",
                                        style="Accent.TButton",
                                        command=self._run_search)
         self._search_btn.pack(pady=4, ipadx=12, ipady=8)
         # Bouton Fichier (remplace le bandeau de menu), style standard
-        self._file_btn = ttk.Button(frm_action, text="Fichier ▾",
+        self._file_btn = ttk.Button(frm_action, text="Fichiers ▾",
                                      command=self._show_file_menu)
         self._file_btn.pack(fill=tk.X, pady=(0, 4))
-        ttk.Label(frm_action, text="Catalogue :",
+        # « Catalogue : xxx » et « Site : xxx » sur une seule ligne chacun.
+        # Des variables derivees suivent automatiquement les sources
+        # (_catalog_path, _site_info) mises a jour ailleurs dans le code.
+        self._catalog_line = tk.StringVar()
+        self._site_line = tk.StringVar()
+
+        def _shorten(s, n=26):
+            # Garde le panneau compact : tronque au milieu les noms trop longs.
+            s = str(s)
+            if len(s) <= n:
+                return s
+            keep = n - 1
+            return s[: keep - keep // 2] + "…" + s[-(keep // 2):]
+
+        def _sync_catalog(*_):
+            self._catalog_line.set("Catalogue : " + _shorten(self._catalog_path.get()))
+
+        def _sync_site(*_):
+            self._site_line.set("Site : " + _shorten(self._site_info.get()))
+
+        self._catalog_path.trace_add("write", _sync_catalog)
+        self._site_info.trace_add("write", _sync_site)
+        _sync_catalog()
+        _sync_site()
+
+        ttk.Label(frm_action, textvariable=self._catalog_line,
                   style="Dim.TLabel").pack(anchor="w")
-        ttk.Label(frm_action, textvariable=self._catalog_path,
-                  style="Dim.TLabel", wraplength=170).pack(anchor="w")
-        ttk.Label(frm_action, text="Site :",
+        ttk.Label(frm_action, textvariable=self._site_line,
                   style="Dim.TLabel").pack(anchor="w", pady=(4, 0))
-        ttk.Label(frm_action, textvariable=self._site_info,
-                  style="Dim.TLabel", wraplength=170).pack(anchor="w")
 
         # Graphe de trajectoire — masqué tant qu'aucun FITS n'est chargé.
         # Deux sous-graphes côte à côte : cible (gauche), étoile de
         # référence sélectionnée (droite).
         self._frm_graph = ttk.Frame(self, padding=(8, 0, 8, 4))
-        # (packé dynamiquement dans _display_trajectory)
-        self._fig = Figure(figsize=(7.2, 3.4), dpi=100)
+        # (packé dynamiquement dans _display_trajectory, avec expand=True)
+        # Figure haute (4.2") : hauteur naturelle plus genereuse pour ne pas
+        # ecraser les graphes ; le tableau au-dessus est limite a 8 lignes pour
+        # laisser la place.
+        self._fig = Figure(figsize=(7.2, 4.2), dpi=100)
         self._fig.patch.set_facecolor(BG)
         self._ax_target = self._fig.add_subplot(1, 2, 1)
         self._ax_ref    = self._fig.add_subplot(1, 2, 2)
@@ -445,13 +539,34 @@ class StarFinderApp(tk.Tk):
         self._traj_canvas.mpl_connect("button_release_event",
                                       self._on_graph_release)
 
+        # Barre de statut — creee et packee EN PREMIER dans la zone basse
+        # (avant le tableau et le graphe). En Tk, un widget side=BOTTOM declare
+        # tot reserve sa bande en priorite ; les zones expand=True (tableau,
+        # graphe) se partagent ensuite l'espace restant. Ainsi la barre ne peut
+        # plus etre poussee hors du cadre quand les graphes s'affichent
+        # (bug observe sous Windows).
+        self._status_var = tk.StringVar(value="Prêt.")
+        self._status_bar = tk.Label(self, textvariable=self._status_var,
+                                    anchor="w", bg=BG3, fg=ACCENT,
+                                    font=("Segoe UI", 10, "bold"),
+                                    padx=10, pady=6, height=1)
+        self._status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+
         # Tableau
         frm_table = ttk.Frame(self, padding=(8, 0, 8, 4))
-        frm_table.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        # Hauteur fixe (pas expand) : le tableau est plafonne (~12 lignes,
+        # scrollable). C'est le graphe qui s'etend pour occuper l'espace, au
+        # lieu d'ecraser les graphes du bas. Une seule zone extensible a la
+        # fois -> la barre de statut n'est jamais poussee hors du cadre.
+        frm_table.pack(side=tk.TOP, fill=tk.X)
 
         cols_ids = [c[0] for c in COLUMNS]
+        # height=8 : tableau volontairement bas (~8 lignes visibles), scrollable
+        # pour le reste. Cela libere de la hauteur pour les graphes du bas, qui
+        # etaient trop ecrases.
         self._tree = ttk.Treeview(frm_table, columns=cols_ids,
-                                   show="headings", selectmode="browse")
+                                   show="headings", selectmode="browse",
+                                   height=8)
 
         for label, _, width, anchor in COLUMNS:
             self._tree.heading(label, text=label,
@@ -473,16 +588,14 @@ class StarFinderApp(tk.Tk):
         self._tree.tag_configure("melchiors", foreground="#fab387")
 
         # Menu contextuel (clic droit)
+        # Les entrees sont (re)construites a chaque clic droit par
+        # _show_context_menu, car elles dependent du nom commun de la ligne.
         self._ctx_menu = tk.Menu(self, tearoff=0, bg=BG2, fg=FG,
                                  activebackground=SEL_BG, activeforeground=ACCENT,
-                                 relief="flat", bd=0)
-        self._ctx_menu.add_command(label="Copier le nom de l'étoile",
-                                   command=self._ctx_copy_name)
-        self._ctx_menu.add_command(label="Ouvrir la page SIMBAD",
-                                   command=self._ctx_open_simbad)
-        self._ctx_menu.add_command(label="Type spectral (Skiff) dans VizieR",
-                                   command=self._ctx_query_vizier)
+                                 font=FONT_UI, disabledforeground=FG2,
+                                 activeborderwidth=0, relief="flat", bd=0)
         self._ctx_row_name = None
+        self._ctx_row_common = ""
         # Button-3 = clic droit (Button-2 sur macOS)
         # Sous X11 (Linux), lier au relachement du bouton evite que le menu
         # disparaisse des le relachement. On memorise juste la ligne a l'appui.
@@ -492,18 +605,44 @@ class StarFinderApp(tk.Tk):
         self._tree.bind("<ButtonRelease-2>", self._show_context_menu)
         self._tree.bind("<<TreeviewSelect>>", self._on_star_select)
 
-        # Barre de statut (tk.Label plutôt que ttk : couleurs fiables sur
-        # toutes les plateformes, notamment Windows)
-        self._status_var = tk.StringVar(value="Prêt.")
-        self._status_bar = tk.Label(self, textvariable=self._status_var,
-                                    anchor="w", bg=BG3, fg=ACCENT,
-                                    font=("Segoe UI", 10, "bold"),
-                                    padx=10, pady=6, height=1)
-        self._status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+        # Info-bulle : affiche le nom commun quand il existe pour la ligne
+        # survolee.
+        self._tree_tip = TreeTooltip(self._tree, self._row_tooltip_text)
 
     # ------------------------------------------------------------------
     # Chargement automatique
     # ------------------------------------------------------------------
+
+    def _finalize_window_size(self):
+        # Regle la taille minimale et la geometrie initiale d'apres la largeur
+        # reellement requise par la barre superieure de panneaux (top). Ainsi
+        # la fenetre ne peut jamais etre reduite au point de couper le bouton
+        # « Rechercher », quel que soit le rendu de police (Windows / Linux).
+        self.update_idletasks()
+
+        # Largeur demandee par la barre de panneaux (inclut le panneau Action).
+        need_w = self._top_frame.winfo_reqwidth() + 24   # + marge de securite
+        min_w = max(950, need_w)
+        min_h = 640
+
+        # Taille initiale : un peu plus large que le minimum, hauteur confortable.
+        init_w = max(1200, min_w)
+        init_h = 860
+
+        # Ne pas depasser l'ecran disponible.
+        screen_w = self.winfo_screenwidth()
+        screen_h = self.winfo_screenheight()
+        init_w = min(init_w, screen_w - 40)
+        init_h = min(init_h, screen_h - 80)
+        min_w = min(min_w, screen_w - 40)
+        min_h = min(min_h, screen_h - 80)
+
+        self.minsize(min_w, min_h)
+
+        # Centrer la fenetre.
+        x = max(0, (screen_w - init_w) // 2)
+        y = max(0, (screen_h - init_h) // 3)
+        self.geometry(f"{init_w}x{init_h}+{x}+{y}")
 
     def _try_autoload(self):
         path = Path(self._catalog_path.get())
@@ -852,9 +991,18 @@ class StarFinderApp(tk.Tk):
                        not getattr(self._trajectory, "synthetic", False))
         keep_fits = (mode == "fits" or use_h) and fits_loaded
         if not keep_fits and obstime is not None and location is not None:
+            # Nom affiche en titre du graphe cible :
+            #  - mode « nom »   -> le nom saisi
+            #  - mode « RA/Dec » -> les coordonnees formatees (ex. « 10h38m ... »)
+            if mode == "name":
+                obj_name = params["name"]
+            elif mode == "radec":
+                obj_name = f"{ra_s}  {dec_s}"
+            else:
+                obj_name = None
             syn = ft.make_synthetic_trajectory(
                 target, obstime, location,
-                object_name=(params["name"] if mode == "name" else None))
+                object_name=obj_name)
             self._trajectory = syn
             self._selected_star = None
             self.after(0, self._display_trajectory)
@@ -943,8 +1091,11 @@ class StarFinderApp(tk.Tk):
 
             # Ordre : Nom, Sep, Az, Alt, Δh, Airmass, Vmag, SpType, Cat,
             #         RA, Dec, B-V, Ebv
-            values = (str(row["Name"]).strip(), sep, az, alt, dh, airmass,
-                      vmag, sptype[:12], ref_str, ra_str, dec_str, bv, ebv)
+            # (le nom commun n'est PAS une colonne : il est lu dans le
+            #  DataFrame pour l'info-bulle et le menu contextuel)
+            values = (str(row["Name"]).strip(), sep, az, alt, dh,
+                      airmass, vmag, sptype[:12], ref_str, ra_str, dec_str,
+                      bv, ebv)
 
             tags = ["even" if i % 2 == 0 else "odd"]
             if is_miles:
@@ -1016,6 +1167,30 @@ class StarFinderApp(tk.Tk):
         finally:
             self._file_menu.grab_release()
 
+    def _common_name_for(self, hd_name: str) -> str:
+        # Renvoie le nom commun (colonne NomCommun) associe a un nom HD,
+        # ou "" si absent. La colonne NomCommun est optionnelle : les anciennes
+        # bases n'en ont pas.
+        df = self._results_df
+        if df is None or "NomCommun" not in df.columns or not hd_name:
+            return ""
+        match = df[df["Name"].astype(str).str.strip() == hd_name]
+        if match.empty:
+            return ""
+        val = match.iloc[0]["NomCommun"]
+        if not pd.notna(val):
+            return ""
+        s = str(val).strip()
+        return "" if s.lower() in ("", "nan") else s
+
+    def _row_tooltip_text(self, row_id):
+        # Info-bulle : nom commun seul (le numero HD est deja dans la colonne).
+        values = self._tree.item(row_id, "values")
+        if not values:
+            return ""
+        hd = str(values[0]).strip()
+        return self._common_name_for(hd)
+
     def _on_ctx_press(self, event):
         # A l'appui : selectionner la ligne sous le curseur et memoriser le nom.
         row_id = self._tree.identify_row(event.y)
@@ -1024,22 +1199,53 @@ class StarFinderApp(tk.Tk):
             return
         self._tree.selection_set(row_id)
         values = self._tree.item(row_id, "values")
-        # La colonne "Nom" est la premiere du tableau
+        # Colonne 0 = "Nom" (HD) ; le nom commun est lu dans le DataFrame.
         self._ctx_row_name = str(values[0]).strip() if values else None
+        self._ctx_row_common = self._common_name_for(self._ctx_row_name or "")
 
     def _show_context_menu(self, event):
-        # Au relachement : afficher le menu. Sous X11, ne PAS appeler
+        # Au relachement : reconstruire le menu selon la ligne (le nom commun
+        # peut etre absent), puis l'afficher. Sous X11, ne PAS appeler
         # grab_release() immediatement, sinon le menu se ferme aussitot.
         if not getattr(self, "_ctx_row_name", None):
             return
-        self._ctx_menu.tk_popup(event.x_root, event.y_root)
 
-    def _ctx_copy_name(self):
+        common = getattr(self, "_ctx_row_common", "")
+        m = self._ctx_menu
+        m.delete(0, "end")
+
+        # En-tete : rappel du nom commun (desactive, purement informatif)
+        if common:
+            m.add_command(label=f"Nom commun : {common}", state="disabled")
+            m.add_separator()
+
+        m.add_command(label="Copier le nom HD",
+                      command=self._ctx_copy_hd)
+        if common:
+            m.add_command(label="Copier le nom commun",
+                          command=self._ctx_copy_common)
+        m.add_separator()
+        m.add_command(label="Ouvrir la page SIMBAD",
+                      command=self._ctx_open_simbad)
+        m.add_command(label="Type spectral (Skiff) dans VizieR",
+                      command=self._ctx_query_vizier)
+
+        m.tk_popup(event.x_root, event.y_root)
+
+    def _ctx_copy_hd(self):
         if not self._ctx_row_name:
             return
         self.clipboard_clear()
         self.clipboard_append(self._ctx_row_name)
-        self._status(f"Nom copié : {self._ctx_row_name}")
+        self._status(f"Nom HD copié : {self._ctx_row_name}")
+
+    def _ctx_copy_common(self):
+        common = getattr(self, "_ctx_row_common", "")
+        if not common:
+            return
+        self.clipboard_clear()
+        self.clipboard_append(common)
+        self._status(f"Nom commun copié : {common}")
 
     def _ctx_open_simbad(self):
         if not self._ctx_row_name:
@@ -1085,6 +1291,10 @@ class StarFinderApp(tk.Tk):
         # Grille lisible : lignes d'altitude tous les 5°
         ax.yaxis.set_major_locator(MultipleLocator(5))
         ax.grid(True, which="major", color=FG2, linewidth=0.6, alpha=0.35)
+        # Pas d'offset scientifique (ex. « +2.0686e4 ») en bas a droite :
+        # inutile ici et parasite sur le graphe de reference encore vide.
+        ax.ticklabel_format(useOffset=False, axis="both")
+        ax.xaxis.get_offset_text().set_visible(False)
 
     def _browse_fits_files(self):
         if ft is None:
@@ -1235,10 +1445,13 @@ class StarFinderApp(tk.Tk):
         if traj is None or traj.n == 0:
             return
 
-        # afficher la zone graphe si nécessaire
+        # afficher la zone graphe si nécessaire.
+        # expand=True : le graphe occupe l'espace vertical disponible (le
+        # tableau au-dessus est plafonne a hauteur fixe). La barre de statut,
+        # packee en premier a la construction, garde sa bande en bas et n'est
+        # pas evincee (le graphe est packe apres elle, donc au-dessus).
         if not self._frm_graph.winfo_ismapped():
-            self._frm_graph.pack(side=tk.BOTTOM, fill=tk.BOTH, expand=True,
-                                 before=self._status_label())
+            self._frm_graph.pack(side=tk.BOTTOM, fill=tk.BOTH, expand=True)
 
         # Fenêtre du panneau CIBLE (gauche) — 1h30 de large (±45 min).
         # Et instant de référence t_ref pour les repères du panneau de droite.
@@ -1433,11 +1646,16 @@ class StarFinderApp(tk.Tk):
                 for txt in legR.get_texts():
                     txt.set_color(FG)
         else:
-            # aucune étoile sélectionnée : panneau en attente
+            # aucune étoile sélectionnée : panneau en attente.
+            # Recopier l'echelle de temps du graphe cible (limites, positions
+            # de graduations ET formateur de date) pour afficher '20:53...'
+            # au lieu du numero de jour matplotlib brut ('20686...').
             axR.set_title("Réf. : (cliquez une étoile)", color=FG2,
                           fontsize=8)
             axR.set_xlim(axL.get_xlim())
             axR.set_ylim(axL.get_ylim())
+            axR.xaxis.set_major_locator(mdates.AutoDateLocator())
+            axR.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
             axR.text(0.5, 0.5, "Sélectionnez une étoile\ndans le tableau",
                      transform=axR.transAxes, ha="center", va="center",
                      color=FG2, fontsize=8)
